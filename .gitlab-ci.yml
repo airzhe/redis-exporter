@@ -1,0 +1,88 @@
+stages:
+  - build1
+  - build2
+  - deploy
+  - end
+
+variables:
+  BUILD_IMAGES_NAME: "${NEW_HARBOR_HOST}/php/$CI_PROJECT_NAME:$CI_COMMIT_REF_SLUG"
+  CHART_NAME: "nicetuan/redis-exporter"
+  NAMESPACE: php-soa
+  VOLUME_DIR: /volume
+
+build1:
+  stage: build1
+  variables:
+    CGO_ENABLED: 0
+  image: harbor.nicetuan.net/php/golang:latest
+  script:
+    - sh build.sh
+    - cd ./output && mkdir ./app && tar -zxvf *.gz -C ./app
+    - rm -rf ${VOLUME_DIR}/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG} && mv ./app ${VOLUME_DIR}/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}
+  when: manual
+  allow_failure: false
+  tags:
+    - k8s-01
+  only:
+    - develop
+    - /^feature.*$/
+
+build2:
+  variables:
+    GIT_STRATEGY: none
+  stage: build2
+  image: harbor.nicetuan.net/php/docker:stable
+  before_script:
+    - mv ${VOLUME_DIR}/${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG} ./ && cd ${CI_PROJECT_NAME}_${CI_COMMIT_REF_SLUG}
+    - echo Dockerfile01 > .dockerignore
+    - echo FROM alpine > Dockerfile01 && echo COPY . /app >> Dockerfile01
+    - docker login -u "${NEW_HARBOR_USER}" -p "${NEW_HARBOR_PWD}" "${NEW_HARBOR_HOST}"
+  script:
+    - docker build -t "$BUILD_IMAGES_NAME"  -f Dockerfile01 .
+    - docker push "$BUILD_IMAGES_NAME"
+  tags:
+    - k8s-01
+  only:
+    - develop
+    - /^feature.*$/
+
+deploy:
+  variables:
+    GIT_STRATEGY: none
+  stage: deploy
+  image: harbor.nicetuan.net/php/helm:3.0-rc2
+  script:
+    - mkdir -p ~/.kube && cat ${KUBE_CONFIG} > ~/.kube/config
+    - helm repo add nicetuan https://harbor.nicetuan.net/chartrepo/php
+    - helm repo update
+    - |
+      helm upgrade $CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG --install \
+        --set image.tag=$CI_COMMIT_REF_SLUG \
+        --set gitBranch=$CI_COMMIT_REF_SLUG \
+        --set commitId=$CI_COMMIT_SHORT_SHA \
+        --username $HARBOR_USER --password $HARBOR_PWD \
+        --set nodeSelector.role="node" \
+        --force --wait --atomic \
+        --namespace=${NAMESPACE} \
+        ${CHART_NAME} --version 1.0
+  tags:
+    - k8s-01
+  only:
+    - develop
+    - /^feature.*$/
+
+
+del_service:
+  variables:
+    GIT_STRATEGY: none
+  stage: end
+  image: harbor.nicetuan.net/php/helm:3.0-rc2
+  script:
+    - mkdir -p ~/.kube && cat ${KUBE_CONFIG} > ~/.kube/config
+    - helm uninstall $CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG -n ${NAMESPACE}
+  when: manual
+  tags:
+    - k8s-01
+  only:
+    - develop
+    - /^feature.*$/
