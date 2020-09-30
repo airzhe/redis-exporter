@@ -111,7 +111,7 @@ func main() {
 				pool := redisPools.Get()
 				ret, err := pool.Do(command, args...)
 				if err != nil {
-					logrus.Errorf("%v %v", err, pool)
+					logrus.Errorf("%v %v", err, args)
 					return
 				}
 				switch v := ret.(type) {
