@@ -13,6 +13,7 @@ import (
 	gxsync "github.com/dubbogo/gost/sync"
 	gxtime "github.com/dubbogo/gost/time"
 	"github.com/garyburd/redigo/redis"
+	"github.com/hashicorp/consul/api"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
@@ -32,12 +33,18 @@ var (
 	version    bool
 	versionStr = "unknow"
 	addr       string
+	consulAddr string
 	wheel      *gxtime.Wheel
 	taskPool   *gxsync.TaskPool
+	err        error
+	mu         sync.Mutex
 
-	config   []configItem
-	taskMap  sync.Map
-	taskList = make(map[string]func(), 0)
+	config     []configItem
+	configYaml []byte
+	taskMap    sync.Map
+	taskList   = make(map[string]func(), 0)
+
+	consulConfigKey = "redis-exporter/config.yaml"
 )
 
 type configItem struct {
@@ -53,8 +60,9 @@ type redisMetrics struct {
 func init() {
 	//读取命令行参数
 	flag.StringVar(&cfgPath, "config", "./config/config.yaml", "config file path")
+	flag.StringVar(&consulAddr, "consul", "", "consule addr")
 	flag.BoolVar(&version, "v", false, "version")
-	flag.StringVar(&addr, "addr", ":8080", "The address to listen on for HTTP requests.")
+	flag.StringVar(&addr, "addr", ":8081", "The address to listen on for HTTP requests.")
 
 	buckets := maxWheelTimeSpan / timeSpan
 	wheel = gxtime.NewWheel(time.Duration(timeSpan), int(buckets)) //wheel longest span is 15 minute
@@ -73,14 +81,51 @@ func main() {
 		os.Exit(0)
 	}
 	//解析配置文件
-	file, err := ioutil.ReadFile(cfgPath)
+	initConfig()
+
+	//创建任务
+	dispatchTask()
+
+	//metrics server && pprof
+	go func() {
+		fmt.Println("server run...")
+		http.Handle("/metrics", promhttp.Handler())
+		http.Handle("/reload", http.HandlerFunc(reloadConfig))
+		logrus.Fatal(http.ListenAndServe(addr, nil))
+	}()
+
+	//执行任务
+	for {
+		select {
+		case <-wheel.After(5 * time.Second):
+			taskMap.Range(func(k, v interface{}) bool {
+				taskPool.AddTask(taskList[k.(string)])
+				return true
+			})
+		}
+	}
+}
+
+func initConfig() {
+	if consulAddr == "" {
+		configYaml, err = ioutil.ReadFile(cfgPath)
+	} else {
+		configYaml, err = getConfigByConsul(consulAddr, consulConfigKey)
+	}
 	if err != nil {
 		logrus.Fatalf("Read config fail:%s", err)
 	}
-	err = yaml.Unmarshal(file, &config)
+	err = yaml.Unmarshal(configYaml, &config)
 	if err != nil {
 		logrus.Fatalf("Fatal error config file read fail:%s", err)
 	}
+}
+
+func dispatchTask() {
+	mu.Lock()
+	defer mu.Unlock()
+	logrus.Info("dispatch task")
+	taskMap = sync.Map{}
 	//prometheus rgistry
 	registry := prometheus.DefaultRegisterer
 	for i := 0; i < len(config); i++ {
@@ -105,7 +150,7 @@ func main() {
 					Help: v.Desc,
 				},
 			)
-			registry.MustRegister(gaugeMetrics)
+			registry.Register(gaugeMetrics)
 			//redisPools必包形式引用了父级变量
 			taskList[k] = func() {
 				pool := redisPools.Get()
@@ -126,24 +171,38 @@ func main() {
 			}
 		}
 	}
+}
 
-	//metrics server && pprof
-	go func() {
-		fmt.Println("server run...")
-		http.Handle("/metrics", promhttp.Handler())
-		logrus.Fatal(http.ListenAndServe(addr, nil))
-	}()
+// 重新加载配置文件
+func reloadConfig(w http.ResponseWriter, r *http.Request) {
+	logrus.Info("reload config")
+	initConfig()
+	dispatchTask()
+	fmt.Fprintln(w, "ok")
+}
 
-	//执行任务
-	for {
-		select {
-		case <-wheel.After(5 * time.Second):
-			taskMap.Range(func(k, v interface{}) bool {
-				taskPool.AddTask(taskList[k.(string)])
-				return true
-			})
-		}
+// 从consule对应的key配置
+func getConfigByConsul(addr string, key string) ([]byte, error) {
+	client, err := api.NewClient(&api.Config{Address: addr})
+	if err != nil {
+		logrus.Error(err)
+		return nil, err
 	}
+
+	// Get a handle to the KV API
+	kv := client.KV()
+
+	// Lookup the pair
+	pair, _, err := kv.Get(key, nil)
+	if err != nil {
+		logrus.Error(err)
+		return nil, err
+	}
+	if pair == nil {
+		return nil, fmt.Errorf("从%s获取%s值为nil", addr, key)
+	}
+
+	return pair.Value, nil
 }
 
 // 根据连接串获取RedisPool
