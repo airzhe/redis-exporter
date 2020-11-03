@@ -98,10 +98,12 @@ func main() {
 	for {
 		select {
 		case <-wheel.After(5 * time.Second):
+			mu.Lock()
 			taskMap.Range(func(k, v interface{}) bool {
 				taskPool.AddTask(taskList[k.(string)])
 				return true
 			})
+			mu.Unlock()
 		}
 	}
 }
@@ -154,6 +156,7 @@ func dispatchTask() {
 			//redisPools必包形式引用了父级变量
 			taskList[k] = func() {
 				pool := redisPools.Get()
+				defer pool.Close()
 				ret, err := pool.Do(command, args...)
 				if err != nil {
 					logrus.Errorf("%v %v", err, args)
