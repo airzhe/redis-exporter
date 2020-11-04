@@ -152,6 +152,7 @@ func dispatchTask() {
 					Help: v.Desc,
 				},
 			)
+			registry.Unregister(gaugeMetrics)
 			registry.Register(gaugeMetrics)
 			//redisPools必包形式引用了父级变量
 			taskList[k] = func() {
