@@ -1,4 +1,4 @@
-- connstr: "redis://:Eiwj2zcT2q@10.2.4.35:30237/2" #redis://:passwd@host:port/<db>
+- connstr: "redis://:S9EltUxw7Z@10.2.4.35:30999/2" #redis://:passwd@host:port/<db>
   monitor:
     soa_payment_queue_delayed1: #监控指标，由组名_服务名_为前缀
       command: [llen, cc] #redis命令以数组格式配置
