@@ -3,6 +3,7 @@ module exporter
 go 1.13
 
 require (
+	github.com/928799934/googleAuthenticator v0.0.0-20180320075411-ad7678ebf8ed
 	github.com/BurntSushi/toml v0.3.1 // indirect
 	github.com/dubbogo/gost v1.9.2
 	github.com/garyburd/redigo v1.6.2
