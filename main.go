@@ -204,8 +204,8 @@ func exit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logrus.Fatal("exit!")
 	fmt.Fprintln(w, "bye bye!")
+	logrus.Fatal("exit!")
 }
 
 func authCode(r *http.Request) (err error) {
