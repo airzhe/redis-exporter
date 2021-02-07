@@ -120,11 +120,11 @@ func initConfig() {
 		configYaml, err = getConfigByConsul(consulAddr, consulConfigKey)
 	}
 	if err != nil {
-		logrus.Fatalf("Read config fail:%s", err)
+		logrus.Warningf("Read config fail:%s", err)
 	}
 	err = yaml.Unmarshal(configYaml, &config)
 	if err != nil {
-		logrus.Fatalf("Fatal error config file read fail:%s", err)
+		logrus.Warningf("Unmarshal config file fail:%s", err)
 	}
 }
 
