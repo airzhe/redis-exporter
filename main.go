@@ -47,7 +47,7 @@ var (
 
 	secret string
 
-	consulConfigKey = "redis-exporter/config.yaml"
+	consulConfigKey = "redis-exporter/config"
 )
 
 type configItem struct {
@@ -85,7 +85,9 @@ func main() {
 		os.Exit(0)
 	}
 	//解析配置文件
-	initConfig()
+	if err := initConfig(); err != nil {
+		return
+	}
 
 	//创建任务
 	dispatchTask()
@@ -113,7 +115,8 @@ func main() {
 	}
 }
 
-func initConfig() {
+func initConfig() error {
+	var err error
 	if consulAddr == "" {
 		configYaml, err = ioutil.ReadFile(cfgPath)
 	} else {
@@ -121,11 +124,14 @@ func initConfig() {
 	}
 	if err != nil {
 		logrus.Warningf("Read config fail:%s", err)
+		return err
 	}
 	err = yaml.Unmarshal(configYaml, &config)
 	if err != nil {
 		logrus.Warningf("Unmarshal config file fail:%s", err)
+		return err
 	}
+	return nil
 }
 
 func dispatchTask() {
@@ -142,6 +148,7 @@ func dispatchTask() {
 		redisPools := getReisPool(connstr)
 		//
 		for k, v := range item.Monitor {
+			desc := v.Desc
 			//记录指标监控运行状态，0运行，1,暂停，2停止(后续实现此功能)
 			taskMap.Store(k, 0)
 			//获取要执行的redis命令及参数
@@ -151,12 +158,14 @@ func dispatchTask() {
 				args = append(args, v.Command[j])
 			}
 			//创建metrics
-			gaugeMetrics := prometheus.NewGauge(
+			gaugeMetrics := prometheus.NewGaugeVec(
 				prometheus.GaugeOpts{
 					Name: k,
-					Help: v.Desc,
+					Help: desc,
 				},
+				[]string{"desc"},
 			)
+
 			registry.Unregister(gaugeMetrics)
 			registry.Register(gaugeMetrics)
 			//redisPools必包形式引用了父级变量
@@ -172,7 +181,7 @@ func dispatchTask() {
 				case []byte:
 					logrus.Warnf("%s %v %v", command, args, string(v))
 				case int64:
-					gaugeMetrics.Set(float64(v))
+					gaugeMetrics.WithLabelValues(desc).Set(float64(v))
 					//logrus.Info(v)
 				default:
 					logrus.Warnf("%s %v %v", command, args, v)
@@ -189,9 +198,11 @@ func reloadConfig(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, err)
 		return
 	}
-
 	logrus.Info("reload config")
-	initConfig()
+	if err := initConfig(); err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
 	dispatchTask()
 	fmt.Fprintln(w, "reload config success")
 }
@@ -228,6 +239,7 @@ func authCode(r *http.Request) (err error) {
 
 // 从consule对应的key配置
 func getConfigByConsul(addr string, key string) ([]byte, error) {
+	var ret []byte
 	client, err := api.NewClient(&api.Config{Address: addr})
 	if err != nil {
 		logrus.Error(err)
@@ -238,16 +250,21 @@ func getConfigByConsul(addr string, key string) ([]byte, error) {
 	kv := client.KV()
 
 	// Lookup the pair
-	pair, _, err := kv.Get(key, nil)
+	pair, _, err := kv.List(consulConfigKey, nil)
 	if err != nil {
 		logrus.Error(err)
 		return nil, err
 	}
-	if pair == nil {
+	if len(pair) == 0 {
 		return nil, fmt.Errorf("从%s获取%s值为nil", addr, key)
 	}
 
-	return pair.Value, nil
+	for i := 0; i < len(pair); i++ {
+		ret = append(ret, pair[i].Value...)
+		ret = append(ret, 13)
+		//fmt.Println(string(pair[i].Value))
+	}
+	return ret, nil
 }
 
 // 根据连接串获取RedisPool
